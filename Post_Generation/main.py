@@ -1,20 +1,14 @@
 import asyncio
-import json
-import logging
 from typing import TypedDict, Annotated, Optional
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, BaseMessage
+from langchain_tavily import TavilySearch
 from langgraph.graph import MessagesState, StateGraph, END
 from langgraph.graph.message import add_messages
-from chains import ReflectionOutput
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-from chains import generate_chain, reflect_chain, synthesizer_chain
-import sys
-import os
+from chains import generate_chain, reflect_chain, synthesizer_chain, ReflectionOutput
+from tools import web_search_client
 load_dotenv()
 
-SERVER_URL = "http://127.0.0.1:8000/mcp"
 
 class MessageGraph(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
@@ -30,30 +24,23 @@ SEARCH = "search"
 SYNTHESIZE = "synthesize"
 
 
-
-async def web_search_client(query: str):
-    async with streamable_http_client(SERVER_URL) as ( read_stream, write_stream, _):
-        async with ClientSession( read_stream, write_stream) as session:
-            init_result = await session.initialize()
-            tools = await session.list_tools()
-            for tool in tools.tools:print(f" - {tool.name}")
-            results = await session.call_tool("web_search_tool", {"query": query})
-            for content in results.content:
-                if content.type == "text":
-                    parsed_json = json.loads(content.text)
-                    return str(parsed_json)
-            # return json.dumps(results)
-
+def web_search(query: str) -> str:
+    # Placeholder for the actual web search implementation
+    client = TavilySearch(max_results=3)
+    results = client.invoke({"query": query})
+    return str(results)
+    return f"Search results for: {query}"
 
 async def search_node(state: MessageGraph):
     # Always search from the user's original message — preserves their authentic framing
     user_message = state["messages"][0]
-    search_results = await web_search_client(user_message.content)
+    # search_results = await web_search_client(user_message.content)
+    search_results = web_search(user_message.content)
     return {"messages": [search_results]} 
 
 def synthesize_node(state: MessageGraph):
     search_results = state.get("search_results", "")
-    response = synthesizer_chain.invoke({"search_results": search_results})
+    response = synthesizer_chain.invoke({"search_results": search_results, "user_input": state["messages"][0].content})
 
     # Format the structured output into a well-structured string
     lines = [

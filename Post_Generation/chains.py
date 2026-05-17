@@ -286,6 +286,7 @@ synthesizer_prompt = ChatPromptTemplate.from_messages([
             Keep the output concise, structured, technically credible, and insight-dense.
         """
     ),
+    ("human", "{user_input}"),
     ("human", "{search_results}"),
 ])
 

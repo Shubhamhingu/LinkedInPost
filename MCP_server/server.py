@@ -1,4 +1,3 @@
-import asyncio
 from dotenv import load_dotenv
 import json
 
@@ -17,7 +16,7 @@ except Exception:
 load_dotenv()
 
 # Create MCP server
-mcp = FastMCP("demo-server")
+mcp = FastMCP("server")
 
 
 # Tool registration
