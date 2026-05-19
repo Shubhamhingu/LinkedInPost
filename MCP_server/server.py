@@ -29,8 +29,12 @@ async def web_search_tool(query: str) -> str:
     results = await client.ainvoke({"query": query})
     cleaned_results = []
     for r in results.get("results", []):
-        cleaned_results.append({ "title": r.get("title"), "content": r.get("content"), "url": r.get("url"), }) 
-        return json.dumps(cleaned_results)
+        cleaned_results.append({
+            "title": r.get("title"),
+            "content": r.get("content"),
+            "url": r.get("url"),
+        })
+    return json.dumps(cleaned_results)  # ← moved outside the loop
 
 
 if __name__ == "__main__":
