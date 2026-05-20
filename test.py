@@ -1,7 +1,10 @@
 import asyncio
+
 from agents import Agent, Runner, set_trace_processors
-from langsmith.integrations.openai_agents_sdk import OpenAIAgentsTracingProcessor
 from dotenv import load_dotenv
+from langsmith.integrations.openai_agents_sdk import \
+    OpenAIAgentsTracingProcessor
+
 load_dotenv()
 
 

@@ -1,6 +1,6 @@
-from dotenv import load_dotenv
 import json
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 try:
@@ -25,7 +25,7 @@ async def web_search_tool(query: str) -> str:
     """
     Search the web using Tavily.
     """
-    client = TavilySearch(max_results=3)
+    client = TavilySearch(max_results=5)
     results = await client.ainvoke({"query": query})
     cleaned_results = []
     for r in results.get("results", []):

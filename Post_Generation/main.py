@@ -1,26 +1,30 @@
 import asyncio
-from dotenv import load_dotenv
 import json
+
+from dotenv import load_dotenv
+
 load_dotenv()
-from langsmith.integrations.openai_agents_sdk import OpenAIAgentsTracingProcessor
 from agents import set_trace_processors
+from langsmith.integrations.openai_agents_sdk import \
+    OpenAIAgentsTracingProcessor
+
 set_trace_processors([OpenAIAgentsTracingProcessor()])
+import os
+import sys
+
 from agents import Agent, Runner, trace
 from agents.mcp import MCPServerStreamableHttp
 from models import ReflectionOutput, SynthesisOutput
 from prompts import GENERATION_SYSTEM, REFLECTION_SYSTEM, SYNTHESIZER_SYSTEM
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from logger.logger import (
-    log_start, log_search_start, log_search_done,
-    log_synthesize_start, log_synthesize_done,
-    log_generate_start, log_generate_done,
-    log_reflect_start, log_reflect_done,
-    log_pipeline_decision, log_final_post,
-    log_error, log_run_summary, LOG_FILE,
-)
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from logger.logger import (LOG_FILE, log_error, log_final_post,
+                           log_generate_done, log_generate_start,
+                           log_pipeline_decision, log_reflect_done,
+                           log_reflect_start, log_run_summary, log_search_done,
+                           log_search_start, log_start, log_synthesize_done,
+                           log_synthesize_start)
+from Pre_Generation.topic_agents import get_selected_topic
 
 # ---------------------------------------------------------------------------
 # Agents
@@ -161,7 +165,7 @@ async def run_pipeline(user_input: str, mcp_server=None) -> str:
             raise
 
         # Decision
-        if reflection.approved or reflection.quality_score >= 80:
+        if reflection.approved or reflection.quality_score >= 70:
             log_pipeline_decision(
                 f"Quality threshold met (score={reflection.quality_score}) — stopping after {iteration} iteration(s)."
             )
@@ -169,7 +173,7 @@ async def run_pipeline(user_input: str, mcp_server=None) -> str:
 
         if iteration < MAX_ITERATIONS:
             log_pipeline_decision(
-                f"Score {reflection.quality_score} < 80 — sending back for revision."
+                f"Score {reflection.quality_score} < 70 — sending back for revision."
             )
 
         feedback_lines = [
@@ -198,20 +202,15 @@ async def run_pipeline(user_input: str, mcp_server=None) -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
-async def main():
-    user_input = """
-        I learnt about openai agents sdk, how it can be used to create agents with tools and how it can be used to
-        create a feedback loop where the agent can critique its own output and improve it.
-    """
-
+async def main():       
     server_url = os.getenv("SERVER_URL")
-
     try:
         if server_url:
             async with MCPServerStreamableHttp(
                 name="web-search-mcp",
                 params={"url": server_url},
             ) as mcp_server:
+                user_input = await get_selected_topic(mcp_server)
                 await run_pipeline(user_input, mcp_server=mcp_server)
         else:
             await run_pipeline(user_input)
