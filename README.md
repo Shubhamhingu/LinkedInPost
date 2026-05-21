@@ -23,6 +23,21 @@ cd LinkedInPost
 # 2. Create a virtual environment and install dependencies
 uv sync
 ```
+## pre-requisites : 
+create a .env with the following api keys
+OPENAI_API_KEY=
+TAVILY_API_KEY=
+
+
+LANGSMITH_TRACING=true
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com/
+LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=
+PINECONE_API_KEY=your-key-here
+PINECONE_INDEX_NAME=linkedin-posts   # optional, this is the default
+
+SERVER_URL = "http://127.0.0.1:8000/mcp"
+
 
 ## 💻 How to Run
 

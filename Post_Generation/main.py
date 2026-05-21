@@ -15,16 +15,20 @@ import sys
 from agents import Agent, Runner, trace
 from agents.mcp import MCPServerStreamableHttp
 from models import ReflectionOutput, SynthesisOutput
+from plagiarism import PlagiarismOutput, check_plagiarism
 from prompts import GENERATION_SYSTEM, REFLECTION_SYSTEM, SYNTHESIZER_SYSTEM
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from logger.logger import (LOG_FILE, log_error, log_final_post,
                            log_generate_done, log_generate_start,
-                           log_pipeline_decision, log_reflect_done,
-                           log_reflect_start, log_run_summary, log_search_done,
-                           log_search_start, log_start, log_synthesize_done,
-                           log_synthesize_start)
+                           log_pipeline_decision, log_plagiarism_result,
+                           log_plagiarism_start, log_post_stored,
+                           log_reflect_done, log_reflect_start,
+                           log_run_summary, log_search_done, log_search_start,
+                           log_start, log_synthesize_done, log_synthesize_start,
+                           log_user_decision)
 from Pre_Generation.topic_agents import get_selected_topic
+from vector_store.store import LinkedInPostStore
 
 # ---------------------------------------------------------------------------
 # Agents
@@ -50,31 +54,28 @@ reflector_agent = Agent(
     output_type=ReflectionOutput,
 )
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+async def prompt_user_approval() -> bool:
+    response = await asyncio.to_thread(
+        input,
+        "\nDo you want to keep this post and store it? [y/n]: ",
+    )
+    return response.strip().lower() in ("y", "yes")
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
-async def run_search(user_input: str, mcp_server=None) -> str:
-    if mcp_server:
-        # Direct MCP tool call — no agent needed
-        result = await mcp_server.call_tool("web_search_tool", {"query": user_input})
-        return result.content[0].text
-    else:
-        from agents import WebSearchTool
-        search_agent = Agent(
-            name="Searcher",
-            instructions="Search for information relevant to the user's query and return the results.",
-            model="gpt-4o-mini",
-            tools=[WebSearchTool()],
-        )
-        result = await Runner.run(search_agent, user_input)
-        return result.final_output
 
 async def run_pipeline(user_input: str, mcp_server=None) -> str:
+    store = LinkedInPostStore()
+
     # ── 1. SEARCH ─────────────────────────────────────────────────────────
     log_start(user_input)
     log_search_start()
-    # raw_search = await run_search(user_input, mcp_server)
     if mcp_server:
         result = await mcp_server.call_tool("web_search_tool", {"query": user_input})
         raw = result.content[0].text
@@ -85,7 +86,7 @@ async def run_pipeline(user_input: str, mcp_server=None) -> str:
         )
     log_search_done(raw_search)
 
-    # ── 2. SYNTHESIZE ─────────────────────────────────────────────────────────
+    # ── 2. SYNTHESIZE ──────────────────────────────────────────────────────
     log_synthesize_start()
     try:
         synthesis_prompt = (
@@ -118,11 +119,13 @@ async def run_pipeline(user_input: str, mcp_server=None) -> str:
         log_error("Synthesis failed", e)
         raise
 
-    # ── 3. GENERATE + REFLECT LOOP ────────────────────────────────────────────
+    # ── 3. GENERATE + REFLECT + PLAGIARISM LOOP ───────────────────────────
     iteration = 0
+    plagiarism_attempts = 0
     post = ""
     reflection: ReflectionOutput | None = None
     MAX_ITERATIONS = 10
+    MAX_PLAGIARISM_ATTEMPTS = 3
 
     generation_input = (
         f"{user_input}\n\n"
@@ -164,18 +167,94 @@ async def run_pipeline(user_input: str, mcp_server=None) -> str:
             log_error(f"Reflection failed at iteration {iteration}", e)
             raise
 
-        # Decision
-        if reflection.approved or reflection.quality_score >= 70:
-            log_pipeline_decision(
-                f"Quality threshold met (score={reflection.quality_score}) — stopping after {iteration} iteration(s)."
-            )
-            break
+        # Quality gate
+        quality_met = reflection.approved or reflection.quality_score >= 70
 
-        if iteration < MAX_ITERATIONS:
+        if quality_met:
             log_pipeline_decision(
-                f"Score {reflection.quality_score} < 70 — sending back for revision."
+                f"Quality threshold met (score={reflection.quality_score}) — running plagiarism check."
             )
 
+            # PLAGIARISM CHECK
+            try:
+                similar_posts = store.search_similar(post, top_k=5, distance_threshold=0.3)
+
+                if not similar_posts:
+                    log_plagiarism_start(0)
+                    log_plagiarism_result(False, "No similar posts found in the store.", [])
+                    log_final_post(post)
+                    accepted = await prompt_user_approval()
+                    log_user_decision(accepted)
+                    if accepted:
+                        post_id = store.add_post(
+                            post,
+                            metadata={
+                                "topic": synthesis.main_topic,
+                                "quality_score": reflection.quality_score,
+                                "iterations": iteration,
+                            },
+                        )
+                        log_post_stored(post_id, store.count())
+                    break
+
+                log_plagiarism_start(len(similar_posts))
+                with trace(f"plagiarism_check_attempt_{plagiarism_attempts}"):
+                    plag_result: PlagiarismOutput = await check_plagiarism(post, similar_posts)
+
+                log_plagiarism_result(
+                    plag_result.is_plagiarized,
+                    plag_result.reason,
+                    plag_result.suggestions,
+                )
+
+                if not plag_result.is_plagiarized:
+                    log_final_post(post)
+                    accepted = await prompt_user_approval()
+                    log_user_decision(accepted)
+                    if accepted:
+                        post_id = store.add_post(
+                            post,
+                            metadata={
+                                "topic": synthesis.main_topic,
+                                "quality_score": reflection.quality_score,
+                                "iterations": iteration,
+                            },
+                        )
+                        log_post_stored(post_id, store.count())
+                    break
+
+                # Plagiarized — try a different angle
+                plagiarism_attempts += 1
+                if plagiarism_attempts >= MAX_PLAGIARISM_ATTEMPTS:
+                    log_pipeline_decision(
+                        f"Max plagiarism attempts ({MAX_PLAGIARISM_ATTEMPTS}) reached — "
+                        "could not generate a sufficiently unique post. Pipeline stopped."
+                    )
+                    break
+
+                log_pipeline_decision(
+                    f"Post is too similar to existing content (attempt {plagiarism_attempts}) — regenerating with a different angle."
+                )
+                suggestion_text = "\n".join(f"- {s}" for s in plag_result.suggestions)
+                generation_input = (
+                    f"Previous post:\n{post}\n\n"
+                    f"IMPORTANT: This post is too similar to previously published content.\n"
+                    f"Reason: {plag_result.reason}\n\n"
+                    f"Suggestions for a genuinely different angle:\n{suggestion_text}\n\n"
+                    "Rewrite the post taking a clearly different approach. "
+                    "Different opening, different examples, different framing. "
+                    "Preserve technical accuracy but make it feel like a fresh perspective."
+                )
+                continue  # re-enter the loop without the quality-rejection feedback path
+
+            except Exception as e:
+                log_error("Plagiarism check failed — pipeline stopped", e)
+                break
+
+        # Quality not met — send back for revision
+        log_pipeline_decision(
+            f"Score {reflection.quality_score} < 70 — sending back for revision."
+        )
         feedback_lines = [
             f"Quality Score: {reflection.quality_score}", "",
             "Strengths:", *[f"- {s}" for s in reflection.strengths], "",
@@ -188,7 +267,6 @@ async def run_pipeline(user_input: str, mcp_server=None) -> str:
             "Revise the post applying the recommendations. Preserve the author's voice."
         )
 
-    log_final_post(post)
     log_run_summary(
         iterations=iteration,
         final_score=reflection.quality_score if reflection else 0,
@@ -202,7 +280,7 @@ async def run_pipeline(user_input: str, mcp_server=None) -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
-async def main():       
+async def main():
     server_url = os.getenv("SERVER_URL")
     try:
         if server_url:
@@ -213,6 +291,7 @@ async def main():
                 user_input = await get_selected_topic(mcp_server)
                 await run_pipeline(user_input, mcp_server=mcp_server)
         else:
+            user_input = await get_selected_topic(None)
             await run_pipeline(user_input)
     except Exception as e:
         log_error("Pipeline terminated with an unhandled error", e)

@@ -218,6 +218,42 @@ def log_error(msg: str, exc: Exception | None = None) -> None:
     log.error("[ERROR] %s", msg, exc_info=exc)
 
 
+def log_user_decision(accepted: bool) -> None:
+    if accepted:
+        console.print("  [pipeline]✓ User accepted the post — storing.[/pipeline]")
+        log.info("[USER] Post accepted for storage.")
+    else:
+        console.print("  [error]✗ User declined the post — not storing.[/error]")
+        log.info("[USER] Post declined — not stored.")
+
+
+def log_plagiarism_start(similar_count: int) -> None:
+    console.print()
+    console.print(Rule("[reflect]  PLAGIARISM CHECK[/reflect]", style="reflect"))
+    console.print(f"  [reflect]Checking against {similar_count} similar post(s) from the store[/reflect]")
+    log.info("[PLAGIARISM] Checking against %d similar post(s)", similar_count)
+
+
+def log_plagiarism_result(is_plagiarized: bool, reason: str, suggestions: list) -> None:
+    if is_plagiarized:
+        console.print("  [error]✗ PLAGIARIZED[/error]")
+        console.print(f"  [label]Reason:[/label] {reason}")
+        for s in suggestions:
+            console.print(f"    [label]→[/label] {s}")
+    else:
+        console.print("  [pipeline]✓ Original — no plagiarism detected[/pipeline]")
+        console.print(f"  [label]Reason:[/label] {reason}")
+    log.info("[PLAGIARISM] is_plagiarized=%s | reason: %s", is_plagiarized, reason)
+    for s in suggestions:
+        log.debug("[PLAGIARISM] Suggestion: %s", s)
+
+
+def log_post_stored(post_id: str, total: int) -> None:
+    console.print(f"  [pipeline]✓ Post stored in vector DB[/pipeline]  "
+                  f"[label]id:[/label] {post_id}  [label]total posts:[/label] {total}")
+    log.info("[STORE] Post stored — id: %s | total in store: %d", post_id, total)
+
+
 def log_run_summary(iterations: int, final_score: int, log_file: Path = LOG_FILE) -> None:
     console.print()
     console.print(Rule("[pipeline]  RUN SUMMARY[/pipeline]", style="pipeline"))
