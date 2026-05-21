@@ -177,7 +177,7 @@ async def run_pipeline(user_input: str, mcp_server=None) -> str:
 
             # PLAGIARISM CHECK
             try:
-                similar_posts = store.search_similar(post, top_k=5, distance_threshold=0.3)
+                similar_posts = store.search_similar(post, top_k=5, distance_threshold=0.4)
 
                 if not similar_posts:
                     log_plagiarism_start(0)

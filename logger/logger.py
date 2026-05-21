@@ -227,6 +227,42 @@ def log_user_decision(accepted: bool) -> None:
         log.info("[USER] Post declined — not stored.")
 
 
+def log_plagiarism_gate(total: int, passed: int, threshold: float, scored_posts: list[dict]) -> None:
+    passed_style = "pipeline" if passed > 0 else "label"
+    console.print(
+        f"  [reflect]Jaccard gate:[/reflect] "
+        f"[{passed_style}]{passed} / {total} passed[/{passed_style}]  "
+        f"[label](threshold={threshold})[/label]"
+    )
+
+    table = Table.grid(padding=(0, 3))
+    table.add_column(style="label", no_wrap=True)
+    table.add_column(style="label", no_wrap=True)
+    table.add_column(style="label", no_wrap=True)
+    table.add_column(no_wrap=True)
+
+    for i, p in enumerate(scored_posts):
+        lex = p["lexical_similarity"]
+        gate_passed = lex >= threshold
+        status = Text("✓ passed", style="pipeline") if gate_passed else Text("✗ filtered", style="error")
+        table.add_row(
+            f"Post {i + 1}",
+            f"cosine={p['distance']:.3f}",
+            f"jaccard={lex:.3f}",
+            status,
+        )
+
+    console.print(table)
+    log.info("[PLAGIARISM] Jaccard gate: %d/%d passed (threshold=%.2f)", passed, total, threshold)
+    for i, p in enumerate(scored_posts):
+        gate_passed = p["lexical_similarity"] >= threshold
+        log.debug(
+            "[PLAGIARISM] Post %d — cosine=%.3f jaccard=%.3f %s",
+            i + 1, p["distance"], p["lexical_similarity"],
+            "PASSED" if gate_passed else "FILTERED",
+        )
+
+
 def log_plagiarism_start(similar_count: int) -> None:
     console.print()
     console.print(Rule("[reflect]  PLAGIARISM CHECK[/reflect]", style="reflect"))

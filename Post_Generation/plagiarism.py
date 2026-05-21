@@ -1,7 +1,13 @@
+import os
+import re
+import sys
 from typing import List
 
 from agents import Agent, Runner
 from pydantic import BaseModel, Field
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from logger.logger import log_plagiarism_gate
 
 
 class PlagiarismOutput(BaseModel):
@@ -19,31 +25,106 @@ class PlagiarismOutput(BaseModel):
     )
 
 
-PLAGIARISM_SYSTEM = """
-You are a plagiarism detection expert for LinkedIn technical content.
+PLAGIARISM_SYSTEM = """You are an expert reviewer for detecting presentation-level plagiarism in LinkedIn technical posts.
 
 You will receive:
-1. A newly generated LinkedIn post.
-2. A set of previously published posts that are semantically similar.
 
-Your job is to decide whether the new post is too similar to any existing post.
+1. A newly generated post.
+2. A set of previously published posts.
 
-A post IS plagiarized if it:
-- Covers the same core idea or insight with very similar framing.
-- Uses the same structure or flow (same opening concept, same progression, same conclusion angle).
-- Repeats the same key talking points, examples, or analogies.
-- Would feel like a duplicate or near-duplicate to a reader who saw both.
+Your task is to determine whether the NEW post is too similar in presentation to any existing post.
 
-A post is NOT plagiarized if it:
-- Covers the same broad topic but from a genuinely different angle.
-- Uses different examples, different technical depth, or a different narrative arc.
-- Reaches a different conclusion or emphasizes different tradeoffs.
-- Has a distinctly different voice or structure.
+IMPORTANT PRINCIPLE:
+Technical concepts, educational explanations, and common examples are naturally repeated online and are NOT considered plagiarism by themselves.
 
-Be strict but fair. Two posts on "RAG" are fine if they teach different things.
-Two posts that both lead with "RAG fails when chunking is naive, here's why" are too similar.
+The SAME:
 
-If plagiarized, provide specific, actionable suggestions so the generator can produce a meaningfully different post.
+* topic
+* technical insight
+* educational concept
+* industry terminology
+* standard example
+* common analogy
+
+are ALL acceptable.
+
+Examples alone should NOT be treated as plagiarism because many technical concepts are commonly explained using the same canonical examples.
+
+A post should ONLY be flagged if the OVERALL PRESENTATION is too similar.
+
+Focus on:
+
+* opening hook
+* framing of the idea
+* sequence of explanation
+* narrative structure
+* rhetorical style
+* pacing of insights
+* transitions between ideas
+* conclusion/takeaway
+* repeated phrasing patterns
+* overall “feel” of the post
+
+Do NOT heavily penalize:
+
+* shared technical examples
+* similar analogies
+* discussing the same tradeoffs
+* similar educational explanations
+
+A post is PLAGIARIZED only if a reader would feel:
+“I’ve essentially read this exact post before.”
+
+Examples of acceptable overlap:
+
+* Two posts explain RAG chunking using the same PDF example but structure the explanation differently.
+* Two posts use the same caching analogy but emphasize different lessons.
+* Two posts discuss hallucinations but use different narrative flow and conclusions.
+
+Examples of plagiarism:
+
+* Same opening premise
+* Same progression of ideas in the same order
+* Same insight reveal pattern
+* Same rhetorical cadence
+* Same conclusion framing
+* Near-identical wording across multiple sections
+
+Evaluation priority:
+
+1. Presentation structure
+2. Narrative flow
+3. Framing originality
+4. Writing style similarity
+5. Repeated phrasing
+
+LOW priority:
+
+* topic overlap
+* concept overlap
+* shared examples
+
+Output format:
+
+Decision: <SAFE / BORDERLINE / TOO_SIMILAR>
+
+Confidence: <LOW / MEDIUM / HIGH>
+
+Reasoning:
+
+* Explain whether overlap is conceptual or structural.
+* Mention which elements are genuinely similar.
+* Explicitly state whether similarities are merely educational/common.
+
+If TOO_SIMILAR:
+Provide actionable suggestions to change:
+
+* framing
+* structure
+* ordering
+* hook
+* narrative angle
+* takeaway
 """
 
 plagiarism_agent = Agent(
@@ -53,17 +134,50 @@ plagiarism_agent = Agent(
     output_type=PlagiarismOutput,
 )
 
+LEXICAL_SIMILARITY_THRESHOLD = 0.12
+
+
+def _trigrams(text: str) -> set[tuple]:
+    words = re.findall(r'\b\w+\b', text.lower())
+    return set(zip(words, words[1:], words[2:]))
+
+
+def compute_lexical_similarity(text1: str, text2: str) -> float:
+    """Word trigram Jaccard similarity — captures structural/phrasing overlap, not topic."""
+    t1, t2 = _trigrams(text1), _trigrams(text2)
+    if not t1 or not t2:
+        return 0.0
+    return len(t1 & t2) / len(t1 | t2)
+
 
 async def check_plagiarism(new_post: str, similar_posts: list[dict]) -> PlagiarismOutput:
+    # Compute jaccard for all retrieved posts first so we can log passed vs filtered.
+    scored = [
+        {**post, "lexical_similarity": round(compute_lexical_similarity(new_post, post["text"]), 4)}
+        for post in similar_posts
+    ]
+
+    candidates = [p for p in scored if p["lexical_similarity"] >= LEXICAL_SIMILARITY_THRESHOLD]
+    log_plagiarism_gate(len(scored), len(candidates), LEXICAL_SIMILARITY_THRESHOLD, scored)
+
+    if not candidates:
+        return PlagiarismOutput(
+            is_plagiarized=False,
+            reason="Posts share the same topic area but no significant structural or phrasing overlap was found.",
+            suggestions=[],
+        )
+
+    candidates.sort(key=lambda x: x["lexical_similarity"], reverse=True)
+
     existing_formatted = "\n\n---\n\n".join(
-        f"[Existing Post {i + 1}] (cosine distance: {p['distance']:.3f})\n{p['text']}"
-        for i, p in enumerate(similar_posts)
+        f"[Existing Post {i + 1}] (cosine distance: {p['distance']:.3f}, lexical similarity: {p['lexical_similarity']:.3f})\n{p['text']}"
+        for i, p in enumerate(candidates)
     )
 
     prompt = (
         f"New post to evaluate:\n\n{new_post}\n\n"
         f"{'=' * 60}\n\n"
-        f"Previously published posts for comparison:\n\n{existing_formatted}"
+        f"Previously published posts that passed structural similarity gate:\n\n{existing_formatted}"
     )
 
     result = await Runner.run(plagiarism_agent, prompt)
